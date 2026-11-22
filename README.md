@@ -157,5 +157,3 @@ Then check the AWS console for remaining billable resources, including volumes, 
 ## Credits
 
 Tutorial and Terraform/Ansible adaptation by **DevOpsVibez**.
-
-Based on Project 06 from [NotHarshhaa/DevOps-Projects](https://github.com/NotHarshhaa/DevOps-Projects), adapted for an Amazon Linux learning lab. The original project's files are not copied here; please get them from the original repository.
