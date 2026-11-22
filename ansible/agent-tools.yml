@@ -1,0 +1,31 @@
+---
+# Run after site.yml. This is for the existing Amazon Linux 2023 lab agent.
+- name: Prepare the container build agent
+  hosts: jenkins_agents
+  become: true
+  gather_facts: true
+  vars:
+    lab_agent_user: ec2-user
+  pre_tasks:
+    - name: Require the lab operating system
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Amazon'
+          - ansible_distribution_major_version == '2023'
+  tasks:
+    - name: Install Docker and curl
+      ansible.builtin.dnf:
+        name:
+          - docker
+          - curl-minimal
+        state: present
+    - name: Start Docker
+      ansible.builtin.systemd_service:
+        name: docker
+        enabled: true
+        state: started
+    - name: Allow the dedicated lab agent user to build images
+      ansible.builtin.user:
+        name: "{{ lab_agent_user }}"
+        groups: docker
+        append: true
