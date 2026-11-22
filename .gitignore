@@ -1,0 +1,7 @@
+# Secrets and local state - never commit these
+*.pem
+*.tfstate
+*.tfstate.*
+.terraform/
+terraform.tfvars
+controller.pub
