@@ -1,0 +1,89 @@
+---
+- name: Prepare the Jenkins lab servers
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    java_home: /usr/lib/jvm/java-21-amazon-corretto.x86_64
+
+  pre_tasks:
+    - name: Check the operating system matches this lab
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Amazon'
+          - ansible_distribution_major_version == '2023'
+          - ansible_architecture == 'x86_64'
+        fail_msg: "Stop: this playbook is written for Amazon Linux 2023 on x86_64."
+
+  tasks:
+    - name: Install Java 21 JDK and Git on both servers
+      ansible.builtin.dnf:
+        name:
+          - java-21-amazon-corretto-devel
+          - git
+        state: present
+
+    - name: Install Maven on the build agent
+      ansible.builtin.dnf:
+        name: maven
+        state: present
+      when: inventory_hostname in groups['jenkins_agents']
+
+    - name: Read current Java tool paths
+      ansible.builtin.command:
+        argv:
+          - readlink
+          - -f
+          - "/usr/bin/{{ item }}"
+      loop:
+        - java
+        - javac
+      register: java_tool_paths
+      changed_when: false
+
+    - name: Select Java 21 for runtime and compiler
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/alternatives
+          - --set
+          - "{{ item.item }}"
+          - "{{ java_home }}/bin/{{ item.item }}"
+      loop: "{{ java_tool_paths.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.stdout != java_home ~ '/bin/' ~ item.item
+
+    - name: Install and start Jenkins on the master only
+      when: inventory_hostname in groups['jenkins_master']
+      block:
+        - name: Install fontconfig
+          ansible.builtin.dnf:
+            name: fontconfig
+            state: present
+
+        - name: Trust the official Jenkins RPM signing key
+          ansible.builtin.rpm_key:
+            key: https://pkg.jenkins.io/rpm-stable/jenkins.io-2026.key
+            state: present
+
+        - name: Configure the Jenkins LTS repository
+          ansible.builtin.yum_repository:
+            name: jenkins
+            description: Jenkins LTS
+            baseurl: https://pkg.jenkins.io/rpm-stable/
+            enabled: true
+            gpgcheck: true
+            gpgkey: https://pkg.jenkins.io/rpm-stable/jenkins.io-2026.key
+
+        - name: Install Jenkins
+          ansible.builtin.dnf:
+            name: jenkins
+            state: present
+
+        - name: Enable and start Jenkins
+          ansible.builtin.systemd_service:
+            name: jenkins
+            daemon_reload: true
+            enabled: true
+            state: started
