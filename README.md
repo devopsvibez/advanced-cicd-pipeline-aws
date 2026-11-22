@@ -2,7 +2,7 @@
 
 Build a three-server Jenkins lab on AWS: an Ansible controller, a Jenkins master and a build agent. Terraform provisions the infrastructure, Ansible connects to the servers and installs the software.
 
-This guide covers Part 1: provisioning the infrastructure and testing Ansible connectivity. Jenkins installation, the CI/CD pipeline, EKS and monitoring come next (see **Next steps**).
+The infrastructure guide below is followed by the original app and pipeline steps. The repository contains code, not a claim that AWS, Jenkins or Kubernetes is currently running.
 
 ## Architecture
 
@@ -136,12 +136,86 @@ Expected: both hosts return `SUCCESS` with `pong`. This checks SSH and Python co
 - **Permission denied:** check `ec2-user`, the key path and `authorized_keys` permissions.
 - **Your IP changed:** update `my_ip` in `terraform.tfvars` and run `terraform apply` again.
 
-## Next steps
+## App and pipeline files
 
-- Install Jenkins and Java 21 with `ansible/site.yml` (included, written for Amazon Linux 2023): `ansible-playbook -i inventory.ini site.yml`
-- Connect the build agent to the Jenkins master (port 50000)
-- Add the pipeline stages: Maven tests, SonarQube code scanning, Docker image build and publish
-- EKS deployment and Prometheus/Grafana monitoring are separate stages with additional costs
+- `app/`: Java 21 HTTP service and five dependency-free HTTP checks.
+- `Dockerfile`, `.dockerignore`: multi-stage build, tests during build, non-root runtime.
+- `Jenkinsfile`: checkout, tests, optional SonarQube gate, image build, container smoke test, optional publish and approved deploy.
+- `test.sh`, `deploy.sh`: repeatable test and deployment commands.
+- `k8s/app.yaml`: namespace, two-replica deployment, health probes, resource limits and internal service.
+- `ansible/agent-tools.yml`: Docker setup for the existing build agent.
+- `sonar-project.properties`: optional SonarQube project settings.
+
+### 7. Prepare Jenkins and the build agent
+
+Run from the Ansible controller with these playbooks beside the existing inventory:
+
+```bash
+ansible-playbook -i inventory.ini site.yml
+ansible-playbook -i inventory.ini agent-tools.yml
+```
+
+The second playbook grants `ec2-user` Docker access, equivalent to root access. Use only on this disposable, trusted lab agent. Reconnect/restart its Jenkins agent process after the group change. Do not run builds on the Jenkins master.
+
+Finish Jenkins setup through its restricted UI. Install Pipeline, Git and Credentials Binding plugins. Create a permanent node with remote directory `/home/ec2-user/jenkins-agent`, label `docker-agent`, one executor and Java 21. Use Jenkins' generated inbound-agent command on the agent, with the master private IP and a secret stored only on the agent. Keep TCP 50000 private to the VPC. Check the node is online and can run `java -version`, `javac -version` and `docker version` as its actual agent user.
+
+Create a Pipeline from SCM job for this private repository, branch `main`, script `Jenkinsfile`. Use a Jenkins GitHub read credential for checkout, never a token inside a file or repository URL. The first run creates the parameters; publish/deploy are off by default.
+
+### 8. Run the app and container locally
+
+From the repository root, with a Java 21 JDK:
+
+```bash
+sh test.sh
+java app/App.java
+# In another terminal:
+curl -f http://127.0.0.1:8080/healthz
+curl -f http://127.0.0.1:8080/metrics
+```
+
+Stop Java before reusing port 8080. On the build agent, Jenkins already uses port 8080 on a different server. To test Docker manually:
+
+```bash
+docker build -t pipeline-lab:local .
+docker run --rm --name pipeline-lab -p 127.0.0.1:8081:8080 pipeline-lab:local
+# Another terminal:
+curl -f http://127.0.0.1:8081/healthz
+# Stop with Ctrl+C.
+```
+
+### 9. Publish and optional quality scan
+
+Create a Docker Hub repository. Add Jenkins username/password credential `dockerhub`, using your Docker Hub username and a scoped access token. Run with `PUBLISH=true` and `IMAGE_REPOSITORY=YOUR_NAMESPACE/pipeline-lab`. Images are tagged with the full Git commit SHA. Registry publishing can expose the image independently of this private source repository; choose the intended registry visibility first.
+
+For SonarQube, provide a reachable server, install its Jenkins plugin, configure server `lab-sonarqube` and tool `SonarScanner`, and set its webhook to `JENKINS_URL/sonarqube-webhook/` with a matching webhook secret. Then enable `SONAR_SCAN`. It blocks on a failed quality gate. No SonarQube server is created here, and no coverage percentage is claimed.
+
+### 10. Deploy to an existing Kubernetes cluster
+
+The current Terraform creates three EC2 servers only. It does not create EKS, Kubernetes, IAM for cluster access or monitoring. Provisioning any paid cluster is a separate, reviewed decision. A local cluster works for learning too.
+
+Install a cluster-compatible `kubectl` on the agent. Verify its checksum using the official Kubernetes installation instructions. Add a least-privilege kubeconfig as Jenkins secret-file credential `lab-kubeconfig`. For EKS, also install AWS CLI and use an approved short-lived IAM role with the necessary cluster access. The agent needs network access to the API endpoint. This manifest includes namespace creation; have an administrator pre-create `pipeline-lab` if namespace creation is restricted.
+
+For private images, create a Docker registry pull secret in `pipeline-lab` outside Git and add `imagePullSecrets` to the pod spec before deployment. The Jenkins push credential does not authenticate Kubernetes pulls.
+
+Run the pipeline with `PUBLISH=true`, `DEPLOY=true` and the image repository. It waits for approval, prints the kubeconfig context, renders the exact SHA-tagged image and waits for rollout. Review the credential's context before approving. The checked-in manifest is a template, do not apply it with `IMAGE_PLACEHOLDER` unchanged.
+
+Manual equivalent, using your local kubeconfig and an image already pushed:
+
+```bash
+sh deploy.sh YOUR_NAMESPACE/pipeline-lab:FULL_40_CHARACTER_GIT_SHA
+kubectl -n pipeline-lab port-forward service/pipeline-lab 8081:80
+# Another terminal:
+curl -f http://127.0.0.1:8081/healthz
+curl -f http://127.0.0.1:8081/metrics
+```
+
+The service is internal, not a paid cloud load balancer. For monitoring, configure your existing Prometheus to scrape the annotated pods on `/metrics`, then graph `sum(rate(lab_http_requests_total[5m]))` in Grafana. Annotations require a matching Prometheus scrape configuration; they do not install monitoring by themselves.
+
+If rollout fails, inspect `kubectl -n pipeline-lab describe pods` and `kubectl -n pipeline-lab logs deployment/pipeline-lab`. To roll back an existing deployment revision: `kubectl -n pipeline-lab rollout undo deployment/pipeline-lab`, then wait for rollout again. Re-deploy the prior known-good SHA if no previous revision exists.
+
+### Validation boundary
+
+The Java 21 compile and five HTTP checks were run locally. Shell syntax and YAML parsing were checked. Docker build, Jenkins execution, SonarQube, Ansible execution and Kubernetes deployment still need to be run in the configured lab. Mutable Java base-image tags are convenient for learning; pin reviewed digests for a repeatable production build. This is a learning baseline, not production infrastructure.
 
 ## Cleanup: do not leave the lab running
 
@@ -151,6 +225,8 @@ From the laptop's Terraform directory, review and confirm destruction. Stopping 
 terraform plan -destroy
 terraform destroy
 ```
+
+For resources added by this app, stop port-forwards and review `kubectl -n pipeline-lab get all`. Delete only this dedicated lab namespace when finished: `kubectl delete namespace pipeline-lab`. This deletes everything in that namespace. Remove test images from the agent with `docker image rm IMAGE:TAG` when no longer needed. Remove separately created cluster/monitoring resources through their own provisioning method before destroying the EC2 lab.
 
 Then check the AWS console for remaining billable resources, including volumes, Elastic IPs and load balancers.
 
