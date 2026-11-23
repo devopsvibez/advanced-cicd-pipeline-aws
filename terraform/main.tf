@@ -166,6 +166,7 @@ resource "aws_instance" "jenkins_master" {
 }
 
 resource "aws_instance" "jenkins_agent" {
+  iam_instance_profile   = var.jenkins_agent_instance_profile
   ami                    = data.aws_ami.amazon_linux.id
   instance_type          = var.agent_instance_type
   subnet_id              = aws_subnet.public.id
@@ -176,4 +177,10 @@ resource "aws_instance" "jenkins_agent" {
     Name = "${var.project_name}-jenkins-agent"
     Role = "jenkins-agent"
   }
+}
+
+variable "jenkins_agent_instance_profile" {
+  description = "Optional instance profile for the trusted Jenkins agent"
+  type        = string
+  default     = null
 }
