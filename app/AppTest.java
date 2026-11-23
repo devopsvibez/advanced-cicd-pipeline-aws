@@ -26,7 +26,26 @@ public final class AppTest {
             check(client, base, "/", "GET", 200, "Turn a page.");
             check(client, base, "/", "GET", 200, "NO REAL ORDERS OR PAYMENTS");
             check(client, base, "/books", "POST", 405, "Method not allowed");
-            System.out.println("PASS: fourteen HTTP checks (health, metrics and bookstore pages)");
+            check(client, base, "/books?q=Malgudi", "GET", 200, "Showing <strong>1</strong> books");
+            check(client, base, "/books?q=not-a-real-title", "GET", 200, "No books on this shelf.");
+            check(client, base, "/books?category=TELUGU+POETRY", "GET", 200, "Showing <strong>2</strong> books");
+            check(client, base, "/books?category=ENGLISH+MONEY&sort=price", "GET", 200, "Rich Dad Poor Dad");
+            check(client, base, "/books?sort=title", "GET", 200, "The Psychology of Money");
+            check(client, base, "/books?q=%3Cscript%3E", "GET", 200, "&lt;script&gt;");
+            check(client, base, "/books?q", "GET", 200, "Showing <strong>12</strong> books");
+            check(client, base, "/books?unknown=1", "GET", 200, "Showing <strong>12</strong> books");
+            for (App.Book book : App.BOOKS) {
+                check(client, base, "/books/" + book.slug(), "GET", 200, App.esc(book.author()));
+            }
+            if (!App.query("q=%ZZ", "q").isEmpty()) throw new AssertionError("Malformed query must be safe");
+            if (!App.query("x=1&q=hello+reader", "q").equals("hello reader")) throw new AssertionError("Query decoding");
+            if (!App.esc("<&\"'>").equals("&lt;&amp;&quot;&#39;&gt;")) throw new AssertionError("HTML escaping");
+            if (!App.cards().contains("data-add-book='psychology-of-money'")) throw new AssertionError("Demo cart card");
+            if (!App.cartData().contains("psychology-of-money") || !App.cartData().contains("The Psychology of Money")) throw new AssertionError("Cart data");
+            var response = client.send(HttpRequest.newBuilder(URI.create(base + "/books")).GET().build(), HttpResponse.BodyHandlers.ofString());
+            if (!response.headers().firstValue("Content-Security-Policy").orElse("").contains("script-src 'sha256-")) throw new AssertionError("Cart CSP");
+            if (!response.body().contains("id='cart-open'") || !response.body().contains("Add to cart +")) throw new AssertionError("Cart controls");
+            System.out.println("PASS: HTTP routes, every book detail, search, filters, sort, escaping, cart markup and security headers");
         } finally {
             server.stop(0);
         }
