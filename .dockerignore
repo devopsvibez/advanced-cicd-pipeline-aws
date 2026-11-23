@@ -1,5 +1,4 @@
 **
-!app/
-!app/App.java
-!app/AppTest.java
 !Dockerfile
+!target/
+!target/pipeline-lab-1.0.0-SNAPSHOT.jar

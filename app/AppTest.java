@@ -17,7 +17,16 @@ public final class AppTest {
             check(client, base, "/missing", "GET", 404, "Not found");
             check(client, base, "/healthz", "POST", 405, "Method not allowed");
             check(client, base, "/metrics", "GET", 200, "lab_http_requests_total 5");
-            System.out.println("PASS: five HTTP checks");
+            check(client, base, "/books", "GET", 200, "Malgudi Days");
+            check(client, base, "/books/malgudi-days", "GET", 200, "R. K. Narayan");
+            check(client, base, "/books/maha-prasthanam", "GET", 200, "Sri Sri");
+            check(client, base, "/books/the-white-tiger", "GET", 200, "Aravind Adiga");
+            check(client, base, "/books/not-a-book", "GET", 404, "Not found");
+            check(client, base, "/contact", "GET", 200, "No real orders");
+            check(client, base, "/", "GET", 200, "Turn a page.");
+            check(client, base, "/", "GET", 200, "NO REAL ORDERS OR PAYMENTS");
+            check(client, base, "/books", "POST", 405, "Method not allowed");
+            System.out.println("PASS: fourteen HTTP checks (health, metrics and bookstore pages)");
         } finally {
             server.stop(0);
         }

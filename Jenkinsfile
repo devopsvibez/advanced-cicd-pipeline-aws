@@ -4,14 +4,19 @@ pipeline {
         skipDefaultCheckout(true)
         disableConcurrentBuilds()
         timestamps()
-        timeout(time: 25, unit: 'MINUTES')
+        timeout(time: 30, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '10'))
     }
     parameters {
-        booleanParam(name: 'PUBLISH', defaultValue: false, description: 'Push to Docker Hub using dockerhub credentials')
-        booleanParam(name: 'DEPLOY', defaultValue: false, description: 'Deploy to an existing approved Kubernetes cluster; requires PUBLISH')
-        string(name: 'IMAGE_REPOSITORY', defaultValue: '', description: 'Docker Hub namespace/repository, no tag')
-        booleanParam(name: 'SONAR_SCAN', defaultValue: false, description: 'Run the configured SonarQube quality gate')
+        booleanParam(name: 'PUBLISH', defaultValue: true, description: 'Publish trusted branch image to Docker Hub')
+        booleanParam(name: 'DEPLOY', defaultValue: true, description: 'Deploy trusted branch image to the approved project-eks lab')
+    }
+    environment {
+        JAVA_HOME = '/usr/lib/jvm/java-21-amazon-corretto.x86_64'
+        PATH = "${JAVA_HOME}/bin:${env.PATH}"
+        IMAGE_REPOSITORY = 'devopsvibezlab/pipeline-lab'
+        AWS_DEFAULT_REGION = 'us-east-1'
+        EKS_CLUSTER = 'project-eks'
     }
     stages {
         stage('Checkout') {
@@ -21,29 +26,63 @@ pipeline {
                 script {
                     env.IMAGE_TAG = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
                     env.LOCAL_IMAGE = "pipeline-lab:${env.IMAGE_TAG}"
-                    env.SMOKE_NAME = "lab-${env.BUILD_NUMBER}"
-                    if (params.DEPLOY && !params.PUBLISH) { error('DEPLOY requires PUBLISH') }
-                    if (params.PUBLISH && !(params.IMAGE_REPOSITORY ==~ /[a-z0-9][a-z0-9_-]*\/[a-z0-9][a-z0-9_.-]*/)) {
-                        error('Set IMAGE_REPOSITORY to a Docker Hub namespace/repository')
-                    }
+                    env.SMOKE_NAME = "lab-${env.BUILD_NUMBER}-${env.IMAGE_TAG.take(8)}"
+                    if (!env.CHANGE_ID && params.DEPLOY && !params.PUBLISH) { error('DEPLOY requires PUBLISH') }
                 }
             }
         }
-        stage('Compile and HTTP tests') {
-            steps { sh 'java -version; docker version; sh test.sh' }
-        }
-        stage('SonarQube quality gate') {
-            when { expression { params.SONAR_SCAN } }
+        stage('Maven build and HTTP checks') {
             steps {
-                script {
-                    def scannerHome = tool 'SonarScanner'
-                    sh 'mkdir -p build/classes && javac -d build/classes app/App.java'
-                    withSonarQubeEnv('lab-sonarqube') {
-                        sh "${scannerHome}/bin/sonar-scanner"
+                sh '''
+                    set -eu
+                    test -x "$JAVA_HOME/bin/javac"
+                    java -version
+                    javac -version
+                    mvn -version
+                    docker version
+                    mvn -B clean verify
+                '''
+                archiveArtifacts artifacts: 'target/*.jar,target/site/jacoco/jacoco.xml', fingerprint: true
+            }
+        }
+        stage('SonarCloud quality gate') {
+            when { anyOf { changeRequest target: 'main'; branch 'main' } }
+            steps {
+                withSonarQubeEnv('SonarCloud') {
+                    withCredentials([string(credentialsId: 'sonarcloud-token', variable: 'SONAR_TOKEN')]) {
+                        sh '''
+                            set -eu
+                            set +x
+                            if [ -n "${CHANGE_ID:-}" ]; then
+                              mvn -B org.sonarsource.scanner.maven:sonar-maven-plugin:5.9.0.7382:sonar \
+                                -Dsonar.host.url=https://sonarcloud.io \
+                                -Dsonar.organization=devopsvibez \
+                                -Dsonar.projectKey=devopsvibez_advanced-cicd-pipeline-aws \
+                                -Dsonar.sources=app -Dsonar.tests=app \
+                                -Dsonar.inclusions=app/App.java -Dsonar.exclusions=app/AppTest.java \
+                                -Dsonar.test.inclusions=app/AppTest.java \
+                                -Dsonar.java.binaries=target/classes \
+                                -Dsonar.java.test.binaries=target/test-classes \
+                                -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+                                -Dsonar.pullrequest.key="$CHANGE_ID" \
+                                -Dsonar.pullrequest.branch="$CHANGE_BRANCH" \
+                                -Dsonar.pullrequest.base="$CHANGE_TARGET" \
+                                -Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300
+                            else
+                              mvn -B org.sonarsource.scanner.maven:sonar-maven-plugin:5.9.0.7382:sonar \
+                                -Dsonar.host.url=https://sonarcloud.io \
+                                -Dsonar.organization=devopsvibez \
+                                -Dsonar.projectKey=devopsvibez_advanced-cicd-pipeline-aws \
+                                -Dsonar.sources=app -Dsonar.tests=app \
+                                -Dsonar.inclusions=app/App.java -Dsonar.exclusions=app/AppTest.java \
+                                -Dsonar.test.inclusions=app/AppTest.java \
+                                -Dsonar.java.binaries=target/classes \
+                                -Dsonar.java.test.binaries=target/test-classes \
+                                -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+                                -Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300
+                            fi
+                        '''
                     }
-                }
-                timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
                 }
             }
         }
@@ -62,12 +101,18 @@ pipeline {
                         n=$((n + 1)); [ "$n" -lt 30 ] || exit 1
                         sleep 1
                     done
-                    curl -fsS "http://127.0.0.1:$port/" | grep -F 'Hello from DevOpsVibez'
+                    curl -fsS "http://127.0.0.1:$port/" | grep -F 'Chapter &amp; Co.'
                 '''
             }
         }
         stage('Publish image') {
-            when { expression { params.PUBLISH } }
+            when {
+                allOf {
+                    not { changeRequest() }
+                    anyOf { branch 'maven-pipeline'; branch 'main' }
+                    expression { params.PUBLISH }
+                }
+            }
             steps {
                 withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'REGISTRY_USER', passwordVariable: 'REGISTRY_TOKEN')]) {
                     sh '''
@@ -82,14 +127,15 @@ pipeline {
                 }
             }
         }
-        stage('Approve and deploy') {
-            when { expression { params.DEPLOY } }
-            steps {
-                input message: 'Deploy this image to the cluster in lab-kubeconfig? Check the context and cost first.'
-                withCredentials([file(credentialsId: 'lab-kubeconfig', variable: 'KUBECONFIG')]) {
-                    sh 'sh deploy.sh "$IMAGE_REPOSITORY:$IMAGE_TAG"'
+        stage('Deploy to EKS') {
+            when {
+                allOf {
+                    not { changeRequest() }
+                    anyOf { branch 'maven-pipeline'; branch 'main' }
+                    expression { params.DEPLOY }
                 }
             }
+            steps { sh 'sh deploy.sh "$IMAGE_REPOSITORY:$IMAGE_TAG"' }
         }
     }
     post {
