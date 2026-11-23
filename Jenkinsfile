@@ -12,6 +12,8 @@ pipeline {
         booleanParam(name: 'DEPLOY', defaultValue: true, description: 'Deploy trusted branch image to the approved project-eks lab')
     }
     environment {
+        JAVA_HOME = '/usr/lib/jvm/java-21-amazon-corretto.x86_64'
+        PATH = "${JAVA_HOME}/bin:${env.PATH}"
         IMAGE_REPOSITORY = 'devopsvibezlab/pipeline-lab'
         AWS_DEFAULT_REGION = 'us-east-1'
         EKS_CLUSTER = 'project-eks'
@@ -33,7 +35,9 @@ pipeline {
             steps {
                 sh '''
                     set -eu
+                    test -x "$JAVA_HOME/bin/javac"
                     java -version
+                    javac -version
                     mvn -version
                     docker version
                     mvn -B clean verify
