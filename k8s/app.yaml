@@ -1,15 +1,10 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: pipeline-lab
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: pipeline-lab
   namespace: pipeline-lab
 spec:
-  replicas: 2
+  replicas: 1
   revisionHistoryLimit: 3
   selector:
     matchLabels:
@@ -18,10 +13,6 @@ spec:
     metadata:
       labels:
         app: pipeline-lab
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/path: /metrics
-        prometheus.io/port: "8080"
     spec:
       automountServiceAccountToken: false
       securityContext:
@@ -79,10 +70,12 @@ metadata:
   name: pipeline-lab
   namespace: pipeline-lab
 spec:
-  type: ClusterIP
+  type: NodePort
+  externalTrafficPolicy: Cluster
   selector:
     app: pipeline-lab
   ports:
     - name: http
       port: 80
       targetPort: http
+      nodePort: 30080
