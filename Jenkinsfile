@@ -29,8 +29,17 @@ pipeline {
                 }
             }
         }
-        stage('Compile and HTTP tests') {
-            steps { sh 'java -version; docker version; sh test.sh' }
+        stage('Maven build and HTTP checks') {
+            steps {
+                sh '''
+                    set -eu
+                    java -version
+                    mvn -version
+                    docker version
+                    mvn -B clean package
+                '''
+                archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+            }
         }
         stage('SonarQube quality gate') {
             when { expression { params.SONAR_SCAN } }
